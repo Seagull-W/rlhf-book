@@ -8,7 +8,10 @@ This module provides common functionality shared across ORM, PRM, and Preference
 Note: We use full fine-tuning for simplicity with small models (0.6B-1.7B).
 """
 
+import json
 import os
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 import torch
@@ -136,9 +139,23 @@ def init_wandb(
         return False
 
 
-def log_metrics(metrics: dict, step: int | None = None):
-    """Log metrics to wandb."""
+def log_metrics(
+    metrics: dict,
+    step: int | None = None,
+    metrics_path: Path | None = None,
+):
+    """Log metrics to W&B and, when requested, a local JSONL file."""
     wandb.log(metrics, step=step)
+
+    if metrics_path is not None:
+        record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            **metrics,
+        }
+        if step is not None:
+            record["step"] = step
+        with metrics_path.open("a") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
 def finish_wandb():

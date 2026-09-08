@@ -43,8 +43,9 @@ class Config(BaseModel):
     device: str = "cuda"
     device_id: int = Field(default=0, ge=0)
 
-    # Logging / demo
+    # Logging / artifacts / demo
     use_wandb: bool = True
+    output_dir: str | None = None
     skip_demo: bool = False
 
     @model_validator(mode="after")

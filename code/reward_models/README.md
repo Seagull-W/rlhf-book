@@ -60,6 +60,31 @@ The default config trains Qwen3-0.6B on 5k UltraFeedback preference pairs with:
 These defaults were selected from a small sweep and are intended as a cleaner
 educational baseline, not universally optimal hyperparameters.
 
+### Preference RM run artifacts
+
+The checked-in Preference RM config writes one completed run to
+`reward_models/runs/preference-rm-qwen3-0.6b/`. The directory must not already
+exist. Set `WANDB_PROJECT` before starting the command to enable W&B; the
+script also records the same train and validation metrics locally in
+`metrics.jsonl`.
+
+After training, `final_model/` contains the fine-tuned backbone, tokenizer,
+linear reward head, and loading metadata. Copy the whole `final_model/`
+directory to a checkout of the same Git revision, then load it with:
+
+```python
+from reward_models.train_preference_rm import load_preference_reward_model
+
+model, tokenizer = load_preference_reward_model(
+    "reward_models/runs/preference-rm-qwen3-0.6b/final_model",
+    device="cuda:0",
+)
+```
+
+`summary.json` stores the final metrics and W&B URL; `run_metadata.json` and
+`config.yaml` record the environment and exact configuration used for the run.
+
+
 Reward models are commonly trained for around one epoch to reduce overfitting. This example uses two epochs because it produced cleaner validation curves in a small local 5k-pair sweep, but users should monitor `val/loss` and `val/accuracy` during the second epoch and reduce `epochs` if validation metrics degrade.
 
 ## Known Issues

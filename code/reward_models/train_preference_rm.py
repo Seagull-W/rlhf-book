@@ -17,15 +17,24 @@ Usage:
 """
 
 import argparse
+import json
 import os
+import platform
 import random
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, List
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+import wandb
+import yaml
 from datasets import Dataset, load_dataset, load_from_disk
+from safetensors.torch import load_file, save_file
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer, get_linear_schedule_with_warmup
+from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup
 
 from reward_models.base import (
     BaseRewardModel,
@@ -204,6 +213,9 @@ class PreferenceRewardModel(BaseRewardModel):
         batch_indices = torch.arange(hidden.size(0), device=hidden.device)
         last_hidden = hidden[batch_indices, seq_lengths]
 
+        # Keep the reward head usable outside CUDA autocast when the backbone
+        # and head use different storage dtypes.
+        last_hidden = last_hidden.to(dtype=self.head.weight.dtype)
         reward = self.head(last_hidden).squeeze(-1)
         return reward
 
@@ -279,11 +291,137 @@ def evaluate_preference_rm(
 
 
 # =============================================================================
+# Run artifacts
+# =============================================================================
+
+
+def _write_json(path: Path, content: dict) -> None:
+    """Write JSON metadata with a stable, human-readable layout."""
+    path.write_text(json.dumps(content, indent=2, sort_keys=True) + "\n")
+
+
+def prepare_run_directory(config: Config) -> Path | None:
+    """Create the optional directory that holds one completed training run."""
+    if config.output_dir is None:
+        return None
+
+    output_dir = Path(config.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=False)
+    (output_dir / "final_model").mkdir()
+
+    with (output_dir / "config.yaml").open("w") as handle:
+        yaml.safe_dump(config.model_dump(mode="json"), handle, sort_keys=False)
+
+    metadata = {
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "command": " ".join(sys.argv),
+        "python_version": platform.python_version(),
+        "torch_version": torch.__version__,
+        "cuda_version": torch.version.cuda,
+        "device": config.get_device(),
+        "gpu_name": (
+            torch.cuda.get_device_name(config.device_id)
+            if config.device == "cuda" and torch.cuda.is_available()
+            else None
+        ),
+    }
+    _write_json(output_dir / "run_metadata.json", metadata)
+    return output_dir
+
+
+def export_final_model(
+    model: PreferenceRewardModel,
+    tokenizer: AutoTokenizer,
+    config: Config,
+    output_dir: Path,
+) -> Path:
+    """Save the trained backbone, tokenizer, reward head, and loading metadata."""
+    model_dir = output_dir / "final_model"
+    backbone_dir = model_dir / "backbone"
+    tokenizer_dir = model_dir / "tokenizer"
+    backbone_dir.mkdir()
+    tokenizer_dir.mkdir()
+
+    model.model.save_pretrained(backbone_dir, safe_serialization=True)
+    tokenizer.save_pretrained(tokenizer_dir)
+    save_file(
+        {
+            name: value.detach().cpu().contiguous()
+            for name, value in model.head.state_dict().items()
+        },
+        str(model_dir / "reward_head.safetensors"),
+    )
+
+    reward_model_config = {
+        "format_version": 1,
+        "model_type": "preference_reward_model",
+        "base_model_subdirectory": "backbone",
+        "tokenizer_subdirectory": "tokenizer",
+        "reward_head_file": "reward_head.safetensors",
+        "head_dim": model.head.out_features,
+        "head_bias": model.head.bias is not None,
+        "head_dtype": str(model.head.weight.dtype).removeprefix("torch."),
+        "backbone_dtype": str(next(model.model.parameters()).dtype).removeprefix("torch."),
+        "max_length": config.max_length,
+        "source_model_id": config.model_id,
+    }
+    _write_json(model_dir / "reward_model_config.json", reward_model_config)
+    (model_dir / "README.md").write_text(
+        "# Preference reward model export\n\n"
+        "Load this directory with the matching RLHF Book checkout:\n\n"
+        "```python\n"
+        "from reward_models.train_preference_rm import load_preference_reward_model\n\n"
+        "model, tokenizer = load_preference_reward_model('final_model', device='cuda:0')\n"
+        "```\n"
+    )
+    return model_dir
+
+
+def load_preference_reward_model(
+    model_dir: str | Path,
+    device: str | torch.device = "cpu",
+) -> tuple[PreferenceRewardModel, AutoTokenizer]:
+    """Load a portable final-model export produced by :func:`export_final_model`."""
+    model_dir = Path(model_dir)
+    metadata = json.loads((model_dir / "reward_model_config.json").read_text())
+    backbone_dtype = getattr(torch, metadata["backbone_dtype"])
+    backbone = AutoModelForCausalLM.from_pretrained(
+        model_dir / metadata["base_model_subdirectory"],
+        dtype=backbone_dtype,
+        trust_remote_code=True,
+    )
+    backbone.config.use_cache = False
+
+    model = PreferenceRewardModel.__new__(PreferenceRewardModel)
+    nn.Module.__init__(model)
+    model.model = backbone
+    model.head = nn.Linear(
+        backbone.config.hidden_size,
+        metadata["head_dim"],
+        bias=metadata["head_bias"],
+    )
+    model.head.load_state_dict(load_file(str(model_dir / metadata["reward_head_file"])))
+    model.to(device)
+    model.eval()
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_dir / metadata["tokenizer_subdirectory"],
+        use_fast=True,
+    )
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    return model, tokenizer
+
+
+# =============================================================================
 # Training
 # =============================================================================
 
 
-def train_preference_rm(config: Config) -> PreferenceRewardModel:
+def train_preference_rm(
+    config: Config,
+    metrics_path: Path | None = None,
+) -> PreferenceRewardModel:
     """Train a preference-based reward model on UltraFeedback.
 
     Args:
@@ -383,6 +521,8 @@ def train_preference_rm(config: Config) -> PreferenceRewardModel:
     global_step = 0
     grad_accum_steps = config.grad_accum_steps
     eval_interval = config.eval_interval
+    last_train_metrics: dict[str, float] = {}
+    last_val_metrics: dict[str, float] = {}
     for epoch in range(config.epochs):
         model.train()
         epoch_loss = 0.0
@@ -437,17 +577,16 @@ def train_preference_rm(config: Config) -> PreferenceRewardModel:
                 avg_loss = accum_loss / mb
                 acc = accum_correct / n
                 print(f"Epoch {epoch} step {global_step} | loss {avg_loss:.4f} | acc {acc:.3f}")
-                log_metrics(
-                    {
-                        "train/loss": avg_loss,
-                        "train/accuracy": acc,
-                        "train/r_chosen_mean": accum_r_chosen / mb,
-                        "train/r_rejected_mean": accum_r_rejected / mb,
-                        "train/reward_margin": (accum_r_chosen - accum_r_rejected) / mb,
-                        "train/lr": optimizer.param_groups[0]["lr"],
-                    },
-                    step=global_step,
-                )
+                train_metrics = {
+                    "train/loss": avg_loss,
+                    "train/accuracy": acc,
+                    "train/r_chosen_mean": accum_r_chosen / mb,
+                    "train/r_rejected_mean": accum_r_rejected / mb,
+                    "train/reward_margin": (accum_r_chosen - accum_r_rejected) / mb,
+                    "train/lr": optimizer.param_groups[0]["lr"],
+                }
+                last_train_metrics = train_metrics
+                log_metrics(train_metrics, step=global_step, metrics_path=metrics_path)
 
                 # Run validation every N optimizer steps.
                 # evaluate_preference_rm() switches model to eval mode, so switch back to train after.
@@ -468,7 +607,8 @@ def train_preference_rm(config: Config) -> PreferenceRewardModel:
                         f"Val Accuracy: {val_metrics['val/accuracy']:.3f} | "
                         f"Val Margin: {val_metrics['val/reward_margin']:.4f}"
                     )
-                    log_metrics(val_metrics, step=global_step)
+                    last_val_metrics = val_metrics
+                    log_metrics(val_metrics, step=global_step, metrics_path=metrics_path)
                     model.train()
 
                 # Reset accumulators
@@ -495,9 +635,25 @@ def train_preference_rm(config: Config) -> PreferenceRewardModel:
                 f"Val Accuracy: {val_metrics['val/accuracy']:.3f} | "
                 f"Val Margin: {val_metrics['val/reward_margin']:.4f}"
             )
-            log_metrics({**val_metrics, "epoch": epoch}, step=global_step)
+            last_val_metrics = val_metrics
+            log_metrics(
+                {**val_metrics, "epoch": epoch},
+                step=global_step,
+                metrics_path=metrics_path,
+            )
             model.train()
 
+    wandb_url = wandb.run.url if wandb.run is not None else None
+    model.run_summary = {
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "global_step": global_step,
+        "dataset_pairs": len(data),
+        "train_pairs": len(train_data),
+        "validation_pairs": len(val_data) if val_data is not None else 0,
+        "final_train_metrics": last_train_metrics,
+        "final_validation_metrics": last_val_metrics,
+        "wandb_url": wandb_url,
+    }
     finish_wandb()
     return model
 
@@ -573,10 +729,22 @@ def main():
     args = parser.parse_args()
 
     cfg = load_config(args.config)
-    model = train_preference_rm(config=cfg)
+    output_dir = prepare_run_directory(cfg)
+    metrics_path = output_dir / "metrics.jsonl" if output_dir is not None else None
+    model = train_preference_rm(config=cfg, metrics_path=metrics_path)
+
+    tokenizer = load_tokenizer(cfg.model_id)
+    if output_dir is not None:
+        final_model_dir = export_final_model(model, tokenizer, cfg, output_dir)
+        _write_json(
+            output_dir / "summary.json",
+            {
+                **model.run_summary,
+                "final_model_dir": str(final_model_dir),
+            },
+        )
 
     if not cfg.skip_demo:
-        tokenizer = load_tokenizer(cfg.model_id)
         demo_scoring(model, tokenizer)
 
 
