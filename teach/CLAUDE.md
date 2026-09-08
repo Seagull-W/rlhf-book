@@ -1,0 +1,112 @@
+# Teach / Slides — Claude Code Context
+
+## Colloquium Slide Framework
+
+Slides are built with [colloquium](https://github.com/natolambert/colloquium) from Markdown source files.
+
+- Standalone talks live in their own directories (e.g. `SALA-2026/`); course decks share `course/`
+- Source files are `talk.md` or `slides.md` for standalone talks, and `lec*.md`, `qa-*.md`, or `conversation-*.md` for the course
+- Assets go in each talk's local `assets/` directory or the shared `course/assets/` directory
+- Bibliographies are local to each collection: standalone talks use their directory's `refs.bib`, and course decks use `course/refs.bib`
+
+## Agent Skills
+
+`teach/.claude/skills/qa-video-timestamps/` extracts per-question (MM:SS)
+timestamps from a published recording (OCR of the slide counter) and adds
+YouTube deep links to the course page's Q&A question lists. Use it whenever a
+Q&A/lecture video is published or timestamp links need refreshing.
+
+## Animations and Progressive Reveals
+
+Colloquium has built-in HTML fragment support. Prefer fragments over duplicate slides for progressive reveals:
+
+- `<!-- animate: bullets -->` reveals each list item one at a time.
+- `<!-- animate: blocks -->` reveals each top-level block one at a time.
+- `<!-- step -->` reveals the content after the marker on the next click. Add multiple markers for multiple reveal points.
+
+**Put no content after the animated list.** With `<!-- animate: bullets -->`, only the list items become fragments — any paragraph *after* the list is not a fragment, so it renders immediately at step 0 and appears **before** the bullets it should follow (out of order). Keep lead-in prose *above* the list and end the slide on the final bullet; if a trailing line matters, fold it into the last bullet (or move it to a separate slide). The same applies to a trailing block under `<!-- animate: blocks -->` only when it is not itself a top-level block.
+
+**Math derivation unrolls**: For step-by-step derivations, add `<!-- step -->` before each new derivation step so the audience sees one manipulation at a time. Repeat a full slide only when separate static slides are intentionally needed, such as a handout or export workflow that should preserve each intermediate frame.
+
+**Never skip steps in derivations.** Every algebraic manipulation must be shown explicitly — if a term cancels, show it cancelling; if an expression is rewritten, show the intermediate form. Assume the audience cannot fill in gaps. For example, when dividing numerator and denominator by the same term, first show the division applied, then show the numerator simplifying to 1, then show the denominator simplifying. Each of these can be a separate slide.
+
+**Use `aligned` for multi-line equations that are one argument.** If a slide shows a chain of equalities or a start-to-end derivation summary, prefer one display math block with `\begin{aligned} ... \end{aligned}` so the `=` signs line up and the expression reads as one flow. Keep separate `$$...$$` blocks for genuinely separate equations.
+
+## Colloquium Directives
+
+Key directives (HTML comments before or after the heading):
+- `<!-- animate: bullets -->` — reveal list items one at a time
+- `<!-- animate: blocks -->` — reveal top-level blocks one at a time
+- `<!-- step -->` — reveal the following content on the next click
+- `<!-- columns: 45/55 -->` — side-by-side columns
+- `<!-- rows: 48/52 -->` — top/bottom rows, separated by `===`
+- `<!-- row-columns: 50/50 -->` — columns within a row
+- `<!-- align: center -->` — center entire slide (slide-scoped, affects everything)
+- `<!-- cite-right: key -->` / `<!-- cite-left: key -->` — citation placement
+- `<!-- title: center -->` — center the title
+- `<!-- layout: section-break -->` — section break slide
+- `<!-- valign: center -->` — vertically center content
+- `<!-- img-align: center -->` — center images
+
+## Images
+
+Colloquium auto-sizes images to fit their slide/column/row container — you do **not** need a custom CSS class (e.g. `{.recipe-fig}`) or a `max-height` rule to keep a figure from overflowing. Just reference the image normally:
+
+```markdown
+![Caption](assets/diagram.png)
+```
+
+Only add sizing when you want to deviate from the default fit (e.g. `{width=60%}` to shrink a figure). Don't add empty wrapper classes "just in case."
+
+## Heading Parsing
+
+Titles must be bare `## Heading` at line start. Wrapping in `<div>` breaks colloquium's heading extraction.
+
+## Title Case
+
+Use sentence case for all slide titles and section-break titles.
+
+- Capitalize the first word of the title
+- Capitalize the first word after a colon
+- Keep acronyms and proper names capitalized (e.g. `RLHF`, `PPO`, `OpenAI`, `ChatGPT`)
+- Do not use title case across the full heading
+
+## Citation Style
+
+Two citation modes — choose based on what is being cited:
+
+**Inline citations** `[@key]` — use when a citation supports a **specific claim or named work** in the slide body.
+
+- Put the citation immediately after the referenced work or phrase: `T5 [@raffel2020exploring]`, `FLAN [@wei2021finetuned]`
+- If multiple named works are listed, cite each one separately rather than bundling them at the end of the sentence
+- Prefer this style when the slide text says things like "X showed...", "Y introduced...", or lists specific papers/datasets
+
+**Slide-level citations** `<!-- cite-right: key -->` / `<!-- cite-left: key -->` — use when the **entire slide** is about a project, paper, or idea, rather than citing a specific bullet point. Also use for image sourcing.
+
+## Build
+
+```bash
+uv run --extra teach colloquium build teach/SALA-2026/talk.md -o build/
+uv run --extra teach colloquium export teach/SALA-2026/talk.md -o slides.pdf
+```
+
+## Local Preview (Live Reload)
+
+`colloquium serve` writes the rendered HTML into the output directory and serves from there. Relative image paths in the Markdown are preserved in the HTML, so the output directory must match the directory those paths expect.
+
+For course lectures in `teach/course/`, images are referenced as `assets/...`, so the rendered HTML must live in `teach/course/` next to the `assets/` folder:
+
+```bash
+# From the repo root:
+uv run --extra teach python -c "from colloquium.serve import serve; serve('teach/course/lec5-chap7.md', port=8081, output_dir='teach/course')"
+```
+
+The URL will be `http://localhost:8081/lec5-chap7.html`. Before handing the URL to the user, verify at least one deck image directly:
+
+```bash
+uv run --extra teach python -c "import urllib.request as u; urls=['http://127.0.0.1:8081/lec5-chap7.html','http://127.0.0.1:8081/assets/rlvr-system.png']; [print(x, (r := u.urlopen(x, timeout=3)).status, r.getheader('content-type')) for x in urls]"
+```
+
+For standalone talks with local `assets/...` references, run from the talk directory or set `output_dir` to that talk directory. If a deck intentionally references assets above its own directory, set `output_dir` high enough for those relative paths and verify an image URL before reporting success.
+
+Note: `colloquium serve` CLI does not expose `--output-dir` yet — this is a known limitation.

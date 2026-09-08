@@ -1,0 +1,41 @@
+# Short, full-finetuning smoke run for an RTX 4060 Laptop GPU (8 GiB VRAM).
+# Qwen2.5-0.5B keeps model weights, gradients, and AdamW state within memory;
+# the 1B OLMo reference configuration requires substantially more VRAM.
+
+# Model
+model_name: Qwen/Qwen2.5-0.5B
+chat_template_source: Qwen/Qwen2.5-0.5B-Instruct
+
+# Dataset (CC BY-NC 4.0; educational use only)
+dataset_name: HuggingFaceH4/no_robots
+dataset_split: train
+max_samples: 1024
+max_length: 384
+
+# Training
+lr: 5.0e-6
+num_epochs: 3
+batch_size: 1
+gradient_accumulation_steps: 8
+warmup_ratio: 0.1
+weight_decay: 0.0
+max_grad_norm: 1.0
+seed: 42
+
+# Hardware
+bf16: true
+gradient_checkpointing: true
+model_device_id: 0
+
+# In-loop generation logging
+sample_every: 50
+sample_max_tokens: 64
+sample_max_input_tokens: 256
+sample_temperature: 0.7
+sample_top_p: 0.9
+sample_do_sample: true
+
+# Logging: may be overridden by WANDB_PROJECT / WANDB_RUN_NAME.
+wandb_project: rlhf-book-local
+wandb_run_name: sft_qwen2_5_0_5b_rtx4060_8gb_effective
+metrics_log_path: logs/sft_qwen2_5_0_5b_rtx4060_8gb_effective.metrics.jsonl

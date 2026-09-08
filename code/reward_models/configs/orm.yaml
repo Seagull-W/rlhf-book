@@ -1,0 +1,36 @@
+# Outcome Reward Model Configuration
+# Token-level correctness classification on GSM8K.
+#
+# Run with:
+#   uv run python -m reward_models.train_orm \
+#     --config reward_models/configs/orm.yaml
+
+# Model
+model_id: Qwen/Qwen3-0.6B
+freeze_backbone: false
+
+# Dataset
+dataset_name: RLHF-Book/gsm8k-qwen3-0.6B-rollouts
+dataset_split: train
+samples: 2000
+rollouts_per_prompt: 100
+max_length: 2048
+
+# Training
+batch_size: 1
+grad_accum_steps: 32
+epochs: 1
+lr: 1.0e-5
+warmup_ratio: 0.0
+lr_scheduler: linear_decay
+val_ratio: 0.1
+eval_interval: 500
+seed: 7
+
+# Hardware
+device: cuda
+device_id: 0
+
+# Logging / demo
+use_wandb: true
+skip_demo: false

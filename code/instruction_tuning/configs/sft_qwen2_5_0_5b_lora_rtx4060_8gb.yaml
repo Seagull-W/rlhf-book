@@ -1,0 +1,54 @@
+# Effective LoRA SFT run for an RTX 4060 Laptop GPU (8 GiB VRAM).
+
+# Model
+model_name: Qwen/Qwen2.5-0.5B-Instruct
+chat_template_source: null
+
+# Dataset
+dataset_name: HuggingFaceH4/no_robots
+dataset_split: train
+validation_split: test
+max_samples: 1024
+max_validation_samples: 64
+max_length: 1024
+shuffle_before_select: true
+drop_overlong: true
+
+# Training
+lr: 5.0e-5
+num_epochs: 3
+batch_size: 1
+gradient_accumulation_steps: 8
+warmup_ratio: 0.03
+weight_decay: 0.0
+max_grad_norm: 1.0
+end_token_weight: 1.0
+seed: 42
+
+# LoRA: frozen bf16 base plus fp32 trainable adapters
+use_lora: true
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target_modules: [q_proj, k_proj, v_proj, o_proj]
+
+# Hardware
+bf16: true
+gradient_checkpointing: true
+model_device_id: 0
+
+# Deterministic, comparable sample generation
+sample_every: 50
+sample_max_tokens: 192
+sample_max_input_tokens: 512
+sample_temperature: 0.7
+sample_top_p: 0.9
+sample_do_sample: false
+eval_every: 50
+
+# Persistent observability and checkpoint
+wandb_project: rlhf-book-local
+wandb_run_name: sft_qwen2_5_0_5b_instruct_lora_rtx4060_8gb_v4
+metrics_log_path: logs/sft_qwen2_5_0_5b_lora_v2.metrics.jsonl
+samples_log_path: logs/sft_qwen2_5_0_5b_lora_v2.samples.jsonl
+output_dir: checkpoints/sft_qwen2_5_0_5b_lora_v2
