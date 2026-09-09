@@ -30,6 +30,9 @@ seed: 123
 device: cuda
 device_id: 0
 
-# Logging / demo
+# Logging / artifacts / demo
+# Set WANDB_PROJECT (and optionally WANDB_ENTITY/WANDB_RUN_NAME) in the shell.
 use_wandb: true
+# The directory must not exist when a run starts, preventing accidental mixing of runs.
+output_dir: reward_models/runs/preference-rm-qwen3-0.6b
 skip_demo: false
