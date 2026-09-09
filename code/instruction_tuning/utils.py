@@ -96,7 +96,9 @@ def load_model(cfg: Config, device: torch.device):
     if tokenizer.chat_template is None and cfg.chat_template_source:
         donor = AutoTokenizer.from_pretrained(cfg.chat_template_source, trust_remote_code=False)
         if donor.chat_template is None:
-            raise ValueError(f"chat_template_source {cfg.chat_template_source} has no chat_template.")
+            raise ValueError(
+                f"chat_template_source {cfg.chat_template_source} has no chat_template."
+            )
         tokenizer.chat_template = donor.chat_template
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -110,6 +112,7 @@ def load_model(cfg: Config, device: torch.device):
     ).to(device)
     if cfg.use_lora:
         from peft import LoraConfig, TaskType, get_peft_model
+
         model = get_peft_model(
             model,
             LoraConfig(

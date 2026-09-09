@@ -50,7 +50,7 @@ class BaseRewardModel(nn.Module):
         # use BF16 autocast on CUDA for lower-precision compute.
         self.model = AutoModelForCausalLM.from_pretrained(
             model_id,
-            dtype=torch.bfloat16,
+            dtype=torch.float32,
             device_map={"": device},
             trust_remote_code=True,
         )

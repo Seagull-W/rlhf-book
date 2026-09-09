@@ -180,7 +180,10 @@ def main(cfg: Config):
                             else 0.0
                         ),
                     }
-                    wandb.log({k: v for k, v in metrics.items() if k not in {"event", "step"}}, step=global_step)
+                    wandb.log(
+                        {k: v for k, v in metrics.items() if k not in {"event", "step"}},
+                        step=global_step,
+                    )
                     write_metric(metrics)
                     progress.update(
                         task,
